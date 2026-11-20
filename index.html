@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Radar Driver Komunitas</title>
+    <!-- Leaflet CSS untuk Peta -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        body { margin: 0; font-family: sans-serif; background: #111827; color: white; }
+        #map { height: 60vh; width: 100%; }
+        .panel { padding: 15px; background: #1f2937; border-top: 2px solid #ee4d2d; }
+        .stats { display: flex; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+        .card { background: #374151; padding: 10px; border-radius: 8px; flex: 1; text-align: center; }
+        .card h3 { margin: 0; font-size: 20px; color: #ee4d2d; }
+        .card p { margin: 4px 0 0; font-size: 11px; color: #d1d5db; }
+        .btn-group { display: flex; gap: 8px; }
+        button { flex: 1; padding: 12px; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; color: white; }
+        .btn-food { background: #ee4d2d; }
+        .btn-spx { background: #f59e0b; }
+        .btn-busy { background: #10b981; }
+    </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="panel">
+    <!-- Statistik Flow Orderan Hari Ini -->
+    <div class="stats">
+        <div class="card">
+            <h3 id="driver-count">0</h3>
+            <p>Driver Online</p>
+        </div>
+        <div class="card">
+            <h3 id="food-count">0</h3>
+            <p>Order Resto</p>
+        </div>
+        <div class="card">
+            <h3 id="spx-count">0</h3>
+            <p>Order Marketplace</p>
+        </div>
+    </div>
+
+    <!-- Tombol Lapor Cepat (1-Tap) -->
+    <div class="btn-group">
+        <button class="btn-food" onclick="laporOrder('food')">+ Dapat Food</button>
+        <button class="btn-spx" onclick="laporOrder('spx')">+ Dapat SPX</button>
+        <button class="btn-busy" onclick="tandaiRamai()">🔥 Titik Ramai</button>
+    </div>
+</div>
+
+<!-- Leaflet JS & Firebase SDK -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getDatabase, ref, set, onValue, push, remove, onDisconnect } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+
+    // GANTI DENGAN KONFIGURASI FIREBASE ANDA
+    const firebaseConfig = {
+        // Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
+
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
+const firebaseConfig = {
+  apiKey: "AIzaSyAR0lwvZI5q_nAeYl4GkH0mwcAPqIkAHJA",
+  authDomain: "radar-driver-6cba6.firebaseapp.com",
+  databaseURL: "https://radar-driver-6cba6-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "radar-driver-6cba6",
+  storageBucket: "radar-driver-6cba6.firebasestorage.app",
+  messagingSenderId: "83971323337",
+  appId: "1:83971323337:web:bb3033e6fe584910a4a418",
+  measurementId: "G-8KK9HGWH38"
+};
+
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);;
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    // ID Unik sementara untuk sesi driver
+    const driverId = "driver_" + Math.random().toString(36).substr(2, 9);
+    let currentLat = -7.5755; // Default koordinat Solo
+    let currentLng = 110.8243;
+
+    // Inisialisasi Peta
+    const map = L.map('map').setView([currentLat, currentLng], 14);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    const driverMarkers = {};
+
+    // 1. Lacak GPS Driver secara Realtime
+    if ("geolocation" in navigator) {
+        navigator.geolocation.watchPosition((pos) => {
+            currentLat = pos.coords.latitude;
+            currentLng = pos.coords.longitude;
+
+            const myRef = ref(db, 'drivers/' + driverId);
+            set(myRef, {
+                lat: currentLat,
+                lng: currentLng,
+                lastUpdate: Date.now()
+            });
+
+            // Hapus marker otomatis jika driver menutup aplikasi/offline
+            onDisconnect(myRef).remove();
+        }, (err) => console.error("GPS Error:", err), { enableHighAccuracy: true });
+    }
+
+    // 2. Tampilkan Persebaran Semua Driver di Peta
+    onValue(ref(db, 'drivers'), (snapshot) => {
+        const data = snapshot.val() || {};
+        const activeIds = Object.keys(data);
+        document.getElementById('driver-count').innerText = activeIds.length;
+
+        // Hapus marker driver yang sudah offline
+        for (let id in driverMarkers) {
+            if (!data[id]) {
+                map.removeLayer(driverMarkers[id]);
+                delete driverMarkers[id];
+            }
+        }
+
+        // Tambah / update posisi driver
+        activeIds.forEach(id => {
+            const { lat, lng } = data[id];
+            if (driverMarkers[id]) {
+                driverMarkers[id].setLatLng([lat, lng]);
+            } else {
+                const label = id === driverId ? "Posisi Anda" : "Rekan Driver";
+                driverMarkers[id] = L.marker([lat, lng]).addTo(map).bindPopup(label);
+            }
+        });
+    });
+
+    // 3. Fungsi Lapor Flow Orderan Masuk/Terambil
+    const today = new Date().toISOString().split('T')[0];
+
+    window.laporOrder = (jenis) => {
+        const orderRef = ref(db, `orders/${today}`);
+        push(orderRef, {
+            jenis: jenis,
+            lat: currentLat,
+            lng: currentLng,
+            waktu: Date.now()
+        });
+        alert(`Laporan order ${jenis.toUpperCase()} terkirim!`);
+    };
+
+    // Tandai titik ramai (Heatmap sederhana dengan lingkaran merah)
+    window.tandaiRamai = () => {
+        const hotspotRef = ref(db, `hotspots/${today}`);
+        push(hotspotRef, {
+            lat: currentLat,
+            lng: currentLng,
+            waktu: Date.now()
+        });
+    };
+
+    // Dengarkan perubahan data orderan hari ini
+    onValue(ref(db, `orders/${today}`), (snapshot) => {
+        const orders = snapshot.val() || {};
+        let food = 0, spx = 0;
+        Object.values(orders).forEach(o => {
+            if (o.jenis === 'food') food++;
+            if (o.jenis === 'spx') spx++;
+        });
+        document.getElementById('food-count').innerText = food;
+        document.getElementById('spx-count').innerText = spx;
+    });
+
+    // Tampilkan lingkaran area ramai di peta
+    onValue(ref(db, `hotspots/${today}`), (snapshot) => {
+        const spots = snapshot.val() || {};
+        Object.values(spots).forEach(s => {
+            L.circle([s.lat, s.lng], {
+                color: 'red',
+                fillColor: '#f03',
+                fillOpacity: 0.3,
+                radius: 250 // Radius 250 meter
+            }).addTo(map).bindPopup("Titik Ramai Orderan");
+        });
+    });
+</script>
+</body>
+</html>
